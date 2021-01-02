@@ -116,8 +116,8 @@ void doit(int fd)
     rio_t rio, server_rio;
 
     /* Read request line and headers */
-    rio_readinitb(&rio, fd);
-    if (!rio_readlineb(&rio, buf, MAXLINE)) //line:netp:doit:readrequest
+    Rio_readinitb(&rio, fd);
+    if (!Rio_readlineb(&rio, buf, MAXLINE)) //line:netp:doit:readrequest
         return;
     //printf("%s", buf);
     sscanf(buf, "%s %s %s", method, uri, version); //line:netp:doit:parserequest
@@ -401,70 +401,6 @@ void print_cahce()
     }
 }
 
-/*
- * get_filetype - derive file type from file name
- */
-void get_filetype(char *filename, char *filetype)
-{
-    if (strstr(filename, ".html"))
-        strcpy(filetype, "text/html");
-    else if (strstr(filename, ".gif"))
-        strcpy(filetype, "image/gif");
-    else if (strstr(filename, ".png"))
-        strcpy(filetype, "image/png");
-    else if (strstr(filename, ".jpg"))
-        strcpy(filetype, "image/jpeg");
-    else if (strstr(filename, ".css"))
-        strcpy(filetype, "text/css");
-    else if (strstr(filename, ".js"))
-        strcpy(filetype, "application/javascript");
-    else
-        strcpy(filetype, "text/plain");
-}
-/* $end serve_static */
-
-/*
- * serve_dynamic - run a CGI program on behalf of the client
- */
-/* $begin serve_dynamic */
-void serve_dynamic(int fd, char *filename, char *cgiargs, char *headers)
-{
-    char buf[MAXLINE], *emptylist[] = {NULL};
-
-    /* Return first part of HTTP response */
-    sprintf(buf, "HTTP/1.0 200 OK\r\n");
-    rio_writen(fd, buf, strlen(buf));
-    sprintf(buf, "Server: Tiny Web Server\r\n");
-    sprintf(buf, "%sVary: *\r\n", buf);
-    sprintf(buf, "%sCache-Control: no-cache, no-store, must-revalidate\r\n", buf);
-    rio_writen(fd, buf, strlen(buf));
-
-    int pid = fork();
-
-    if (pid < 0)
-    {
-        fprintf(stderr, "Tiny failed to fork CGI process!\n");
-        return;
-    }
-
-    if (pid == 0)
-    { /* Child */ //line:netp:servedynamic:fork
-        /* Real server would set all CGI vars here */
-        setenv("QUERY_STRING", cgiargs, 1); //line:netp:servedynamic:setenv
-        setenv("REQUEST_HEADERS", headers, 1);
-        dup2(fd, STDOUT_FILENO); /* Redirect stdout to client */    //line:netp:servedynamic:dup2
-        execve(filename, emptylist, environ); /* Run CGI program */ //line:netp:servedynamic:execve
-    }
-    else
-    {
-        // change in proxylab:
-        // parent do not wait for /cgi-bin/repeater
-        // allowing it to run in the background
-        if (strstr(filename, "repeater") == NULL)
-            wait(NULL); /* Parent waits for and reaps child */ //line:netp:servedynamic:wait
-    }
-}
-/* $end serve_dynamic */
 
 /*
  * clienterror - returns an error message to the client
