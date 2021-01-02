@@ -11,7 +11,6 @@
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
 static const char *connect_header = "Connection: close\r\n";
 static const char *proxy_header = "Proxy-Connection: close\r\n";
-static sem_t mutex;
 
 void doit(int fd);
 void read_requesthdrs(rio_t *rp, char *req_header_buf);
@@ -22,13 +21,13 @@ void serve_dynamic(int fd, char *filename, char *cgiargs, char *headers);
 void clienterror(int fd, char *cause, char *errnum,
                  char *shortmsg, char *longmsg);
 void build_header_send_to_server(char *header, char *hostname, char *path, int port, rio_t *client_rio);
-int connect_server(char *hostname, int port, char *header);
+int connect_server(char *hostname, int port);
 
 /* Cache Part*/
 void cache_init();
-int cache_find(int fd,char *url);
+int cache_find(int fd, char *url);
 int cache_remove();
-void cache_LRU();
+void cache_LRU(int index);
 void cache_uri(char *uri, char *buf);
 void readPre(int x);
 void readAfter(int x);
@@ -55,11 +54,11 @@ static Cache cache;
 
 void *thread(void *vargp)
 {
+    int connfd = *((int *)vargp);
     Pthread_detach(pthread_self());
-    int connfd = *( (int*)vargp);
+    Free(vargp);
     doit(connfd);
     Close(connfd);
-    Free(vargp);
     return NULL;
 }
 
@@ -75,7 +74,7 @@ int main(int argc, char **argv)
 {
     signal(SIGPIPE, SIG_IGN);
     signal(SIGCHLD, sigchld_handler);
-    Sem_init(&mutex, 0, 1);
+
     cache_init();
     int listenfd, *connfd;
     char hostname[MAXLINE], port[MAXLINE];
@@ -90,17 +89,18 @@ int main(int argc, char **argv)
         exit(1);
     }
 
-    listenfd = open_listenfd(argv[1]);
+    listenfd = Open_listenfd(argv[1]);
     while (1)
     {
         clientlen = sizeof(clientaddr);
         connfd = Malloc(sizeof(int));
-        *connfd = accept(listenfd, (SA *)&clientaddr, &clientlen); //line:netp:tiny:accept
-        getnameinfo((SA *)&clientaddr, clientlen, hostname, MAXLINE,
+        *connfd = Accept(listenfd, (SA *)&clientaddr, &clientlen); //line:netp:tiny:accept
+        Getnameinfo((SA *)&clientaddr, clientlen, hostname, MAXLINE,
                     port, MAXLINE, 0);
         printf("Accepted connection from (%s, %s)\n", hostname, port);
         Pthread_create(&tid, NULL, thread, connfd);
     }
+    Close(listenfd);
 }
 /* $end tinymain */
 
@@ -122,6 +122,7 @@ void doit(int fd)
     if (!Rio_readlineb(&rio, buf, MAXLINE)) //line:netp:doit:readrequest
         return;
     //printf("%s", buf);
+
     sscanf(buf, "%s %s %s", method, uri, version); //line:netp:doit:parserequest
     if (strcasecmp(method, "GET"))
     { //line:netp:doit:beginrequesterr
@@ -130,28 +131,25 @@ void doit(int fd)
         return;
     } //line:netp:doit:endrequesterr
 
-    
-    int cache_index=cache_find(fd,uri);
-    if(cache_index!=-1)
+    int cache_index = cache_find(fd, uri);
+    if (cache_index != -1)
     {
-        writePre(cache_index);
-        cache.cacheset[cache_index].LRU=0;
-        writeAfter(cache_index);
-        cache_LRU();
+        cache_LRU(cache_index);
         return;
     }
 
     char origin_uri[MAXLINE];
     strcpy(origin_uri, uri);
-    
+
     parse_uri(uri, hostname, path, &port);
 
 #ifdef DEBUG
     printf("%s %s %d\n", hostname, path, port);
 #endif
+
     build_header_send_to_server(header_send_to_server, hostname, path, port, &rio);
-    
-    server_fd = connect_server(hostname, port, header_send_to_server);
+
+    server_fd = connect_server(hostname, port);
 
     if (server_fd < 0)
     {
@@ -162,25 +160,30 @@ void doit(int fd)
     Rio_writen(server_fd, header_send_to_server, strlen(header_send_to_server));
 
     char cachebuf[MAX_OBJECT_SIZE];
+    memset(cachebuf, 0, sizeof(cachebuf));
     int bufsize = 0;
     size_t len;
     while ((len = Rio_readlineb(&server_rio, buf, MAXLINE)) > 0)
     {
-        
+
 #ifdef DEBUG
         printf("Received %ld bytes from the remote server\n", len);
 #endif
 
-        bufsize+=len;
-        if(bufsize<MAX_OBJECT_SIZE) strcat(cachebuf,buf);
-        //    printf("Received buf = %s\n",buf);
+        bufsize += len;
+        if (bufsize < MAX_OBJECT_SIZE)
+        {
+            //注意这里也需要用memcpy,因为cache可能是二进制文件
+            memcpy(cachebuf + bufsize - len, buf, len);
+        }
+
         Rio_writen(fd, buf, len);
     }
     Close(server_fd);
 
-    if(bufsize<MAX_OBJECT_SIZE)
+    if (bufsize < MAX_OBJECT_SIZE)
     {
-        cache_uri(origin_uri,cachebuf);
+        cache_uri(origin_uri, cachebuf);
     }
 }
 /* $end doit */
@@ -189,42 +192,35 @@ void build_header_send_to_server(char *header, char *hostname, char *path, int p
 {
     char buf[MAXLINE], request_header[MAXLINE], host_header[MAXLINE], other_header[MAXLINE];
     sprintf(request_header, "GET %s HTTP/1.0\r\n", path);
-
+    sprintf(host_header, "Host: %s:%d\r\n", hostname, port);
+    sprintf(other_header, "%s%s%s", user_agent_hdr, connect_header, proxy_header);
+    strcat(request_header, host_header);
+    strcat(request_header, other_header);
     while (Rio_readlineb(client_rio, buf, MAXLINE) > 0)
     {
         if (strcmp(buf, "\r\n") == 0)
-            break; /*EOF*/
-        if (strncmp(buf, "Host", 4) == 0)
-        {
-            strcpy(host_header, buf);
+            break;
+
+        /*ignore repeated header*/
+        if (strstr(buf, "Host:") != NULL)
             continue;
-        }
-        if (strncasecmp(buf, "Connection", 10) == 0 &&
-            strncasecmp(buf, "Proxy-Connection", 16) == 0 &&
-            strncasecmp(buf, "User-Agent", 10) == 0)
-        {
-            strcat(other_header, buf);
-        }
+        if (strstr(buf, "User-Agent:") != NULL)
+            continue;
+        if (strstr(buf, "Connection:") != NULL)
+            continue;
+        if (strstr(buf, "Proxy-Connection:") != NULL)
+            continue;
+        strcat(request_header, buf);
     }
-    if (strlen(host_header) == 0)
-    {
-        sprintf(host_header, "Host: %s\r\n", hostname);
-    }
-    sprintf(header, "%s%s%s%s%s%s%s",
-            request_header,
-            host_header,
-            connect_header,
-            proxy_header,
-            user_agent_hdr,
-            other_header,
-            "\r\n");
+    strcat(request_header, "\r\n");
+    sprintf(header, "%s", request_header);
 #ifdef DEBUG
     printf("%s\n", header);
 #endif
     return;
 }
 
-int connect_server(char *hostname, int port, char *header)
+int connect_server(char *hostname, int port)
 {
     char port_name[10];
     sprintf(port_name, "%d", port);
@@ -292,17 +288,14 @@ void parse_uri(char *uri, char *hostname, char *path, int *port)
 /*Cache Part*/
 void cache_init()
 {
-    cache.cache_cnt = 0;
     for (int i = 0; i < CACHE_SIZE; i++)
     {
         cache.cacheset[i].LRU = 0;
-        cache.cacheset[i].isempty =1;
-        Sem_init(&cache.cacheset[i].rcntmutex,0,1);
-        Sem_init(&cache.cacheset[i].wcntmutex,0,1);
-        Sem_init(&cache.cacheset[i].workmutex,0,1);
-        cache.cacheset[i].rcnt=0;
-        cache.cacheset[i].wcnt=0;
-
+        cache.cacheset[i].isempty = 1;
+        Sem_init(&cache.cacheset[i].rcntmutex, 0, 1);
+        Sem_init(&cache.cacheset[i].workmutex, 0, 1);
+        cache.cacheset[i].rcnt = 0;
+        cache.cacheset[i].wcnt = 0;
     }
 }
 
@@ -310,7 +303,8 @@ void readPre(int x)
 {
     P(&cache.cacheset[x].rcntmutex);
     cache.cacheset[x].rcnt++;
-    if(cache.cacheset[x].rcnt==1)   P(&cache.cacheset[x].workmutex);
+    if (cache.cacheset[x].rcnt == 1)
+        P(&cache.cacheset[x].workmutex);
     V(&cache.cacheset[x].rcntmutex);
 }
 
@@ -318,7 +312,8 @@ void readAfter(int x)
 {
     P(&cache.cacheset[x].rcntmutex);
     cache.cacheset[x].rcnt--;
-    if(cache.cacheset[x].rcnt==0)   V(&cache.cacheset[x].workmutex);
+    if (cache.cacheset[x].rcnt == 0)
+        V(&cache.cacheset[x].workmutex);
     V(&cache.cacheset[x].rcntmutex);
 }
 
@@ -332,21 +327,22 @@ void writeAfter(int x)
     V(&cache.cacheset[x].workmutex);
 }
 
-int cache_find(int fd,char *url)
+int cache_find(int fd, char *url)
 {
     int i;
-    for(i=0;i<CACHE_SIZE;i++)
+    for (i = 0; i < CACHE_SIZE; i++)
     {
         readPre(i);
-        if(cache.cacheset[i].isempty==0&&strcmp(cache.cacheset[i].cache_url,url)==0)   
+        if (cache.cacheset[i].isempty == 0 && strcmp(cache.cacheset[i].cache_url, url) == 0)
         {
-            Rio_writen(fd,cache.cacheset[i].cache_object,MAX_OBJECT_SIZE);
+            Rio_writen(fd, cache.cacheset[i].cache_object, MAX_OBJECT_SIZE);
             readAfter(i);
             break;
         }
         readAfter(i);
     }
-    if(i==CACHE_SIZE)   return -1;
+    if (i == CACHE_SIZE)
+        return -1;
     return i;
 }
 
@@ -354,31 +350,35 @@ int cache_remove()
 {
     int max_LRU = -1;
     int record = 0;
-    for(int i=0;i<CACHE_SIZE;i++)
+    for (int i = 0; i < CACHE_SIZE; i++)
     {
         readPre(i);
-        if(cache.cacheset[i].isempty==1)
+        if (cache.cacheset[i].isempty == 1)
         {
-            record=i;
+            record = i;
             readAfter(i);
             break;
         }
-        if(cache.cacheset[i].LRU>max_LRU)
+        if (cache.cacheset[i].LRU > max_LRU)
         {
-            max_LRU=cache.cacheset[i].LRU;
-            record=i;
-            readAfter(i);
+            max_LRU = cache.cacheset[i].LRU;
+            record = i;
         }
+        readAfter(i);
     }
     return record;
 }
 
-void cache_LRU()
+void cache_LRU(int index)
 {
-    for(int i=0;i<CACHE_SIZE;i++)
+    for (int i = 0; i < CACHE_SIZE; i++)
     {
         writePre(i);
-        if(cache.cacheset[i].isempty==0)
+        if (i == index)
+        {
+            cache.cacheset[i].LRU = 0;
+        }
+        else if (cache.cacheset[i].isempty == 0)
         {
             cache.cacheset[i].LRU++;
         }
@@ -388,88 +388,24 @@ void cache_LRU()
 
 void cache_uri(char *url, char *buf)
 {
-    int num=cache_remove();
+    int num = cache_remove();
     writePre(num);
-    strcpy(cache.cacheset[num].cache_url,url);
-    strcpy(cache.cacheset[num].cache_object,buf);
-    cache.cacheset[num].isempty=0;
-    cache.cacheset[num].LRU=0;
+    strcpy(cache.cacheset[num].cache_url, url);
+    memcpy(cache.cacheset[num].cache_object, buf, MAX_OBJECT_SIZE);
+    cache.cacheset[num].isempty = 0;
+    cache.cacheset[num].LRU = 0;
     writeAfter(num);
-    cache_LRU();
+    cache_LRU(num);
 }
 
 void print_cahce()
 {
-    for(int i=0;i<CACHE_SIZE;i++)
+    for (int i = 0; i < CACHE_SIZE; i++)
     {
-        if(cache.cacheset[i].isempty==0)    printf("cache[%d] %s\n",i,cache.cacheset[i].cache_url);
+        if (cache.cacheset[i].isempty == 0)
+            printf("cache[%d] %s\n", i, cache.cacheset[i].cache_url);
     }
 }
-
-/*
- * get_filetype - derive file type from file name
- */
-void get_filetype(char *filename, char *filetype)
-{
-    if (strstr(filename, ".html"))
-        strcpy(filetype, "text/html");
-    else if (strstr(filename, ".gif"))
-        strcpy(filetype, "image/gif");
-    else if (strstr(filename, ".png"))
-        strcpy(filetype, "image/png");
-    else if (strstr(filename, ".jpg"))
-        strcpy(filetype, "image/jpeg");
-    else if (strstr(filename, ".css"))
-        strcpy(filetype, "text/css");
-    else if (strstr(filename, ".js"))
-        strcpy(filetype, "application/javascript");
-    else
-        strcpy(filetype, "text/plain");
-}
-/* $end serve_static */
-
-/*
- * serve_dynamic - run a CGI program on behalf of the client
- */
-/* $begin serve_dynamic */
-void serve_dynamic(int fd, char *filename, char *cgiargs, char *headers)
-{
-    char buf[MAXLINE], *emptylist[] = {NULL};
-
-    /* Return first part of HTTP response */
-    sprintf(buf, "HTTP/1.0 200 OK\r\n");
-    rio_writen(fd, buf, strlen(buf));
-    sprintf(buf, "Server: Tiny Web Server\r\n");
-    sprintf(buf, "%sVary: *\r\n", buf);
-    sprintf(buf, "%sCache-Control: no-cache, no-store, must-revalidate\r\n", buf);
-    rio_writen(fd, buf, strlen(buf));
-
-    int pid = fork();
-
-    if (pid < 0)
-    {
-        fprintf(stderr, "Tiny failed to fork CGI process!\n");
-        return;
-    }
-
-    if (pid == 0)
-    { /* Child */ //line:netp:servedynamic:fork
-        /* Real server would set all CGI vars here */
-        setenv("QUERY_STRING", cgiargs, 1); //line:netp:servedynamic:setenv
-        setenv("REQUEST_HEADERS", headers, 1);
-        dup2(fd, STDOUT_FILENO); /* Redirect stdout to client */    //line:netp:servedynamic:dup2
-        execve(filename, emptylist, environ); /* Run CGI program */ //line:netp:servedynamic:execve
-    }
-    else
-    {
-        // change in proxylab:
-        // parent do not wait for /cgi-bin/repeater
-        // allowing it to run in the background
-        if (strstr(filename, "repeater") == NULL)
-            wait(NULL); /* Parent waits for and reaps child */ //line:netp:servedynamic:wait
-    }
-}
-/* $end serve_dynamic */
 
 /*
  * clienterror - returns an error message to the client
