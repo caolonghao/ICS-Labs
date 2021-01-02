@@ -26,7 +26,7 @@ int connect_server(char *hostname, int port, char *header);
 
 /* Cache Part*/
 void cache_init();
-char* cache_find(char *url,int* index);
+int cache_find(int fd,char *url);
 int cache_remove();
 void cache_LRU();
 void cache_uri(char *uri, char *buf);
@@ -55,10 +55,11 @@ static Cache cache;
 
 void *thread(void *vargp)
 {
-    int connfd = (int)vargp;
     Pthread_detach(pthread_self());
+    int connfd = *( (int*)vargp);
     doit(connfd);
     Close(connfd);
+    Free(vargp);
     return NULL;
 }
 
@@ -76,7 +77,7 @@ int main(int argc, char **argv)
     signal(SIGCHLD, sigchld_handler);
     Sem_init(&mutex, 0, 1);
     cache_init();
-    int listenfd, connfd;
+    int listenfd, *connfd;
     char hostname[MAXLINE], port[MAXLINE];
     socklen_t clientlen;
     struct sockaddr_storage clientaddr;
@@ -93,11 +94,12 @@ int main(int argc, char **argv)
     while (1)
     {
         clientlen = sizeof(clientaddr);
-        connfd = accept(listenfd, (SA *)&clientaddr, &clientlen); //line:netp:tiny:accept
+        connfd = Malloc(sizeof(int));
+        *connfd = accept(listenfd, (SA *)&clientaddr, &clientlen); //line:netp:tiny:accept
         getnameinfo((SA *)&clientaddr, clientlen, hostname, MAXLINE,
                     port, MAXLINE, 0);
         printf("Accepted connection from (%s, %s)\n", hostname, port);
-        Pthread_create(&tid, NULL, thread, (void *)connfd);
+        Pthread_create(&tid, NULL, thread, connfd);
     }
 }
 /* $end tinymain */
@@ -116,8 +118,8 @@ void doit(int fd)
     rio_t rio, server_rio;
 
     /* Read request line and headers */
-    rio_readinitb(&rio, fd);
-    if (!rio_readlineb(&rio, buf, MAXLINE)) //line:netp:doit:readrequest
+    Rio_readinitb(&rio, fd);
+    if (!Rio_readlineb(&rio, buf, MAXLINE)) //line:netp:doit:readrequest
         return;
     //printf("%s", buf);
     sscanf(buf, "%s %s %s", method, uri, version); //line:netp:doit:parserequest
@@ -129,17 +131,13 @@ void doit(int fd)
     } //line:netp:doit:endrequesterr
 
     
-    int cache_index;
-    char* cache_context=cache_find(uri,&cache_index);
-    if(cache_context!=NULL)
+    int cache_index=cache_find(fd,uri);
+    if(cache_index!=-1)
     {
-        readPre(cache_index);
-        puts("cache hit!");
-        Rio_writen(fd,cache_context,strlen(cache_context));
+        writePre(cache_index);
         cache.cacheset[cache_index].LRU=0;
-        readAfter(cache_index);
+        writeAfter(cache_index);
         cache_LRU();
-        Free(cache_context);
         return;
     }
 
@@ -168,9 +166,11 @@ void doit(int fd)
     size_t len;
     while ((len = Rio_readlineb(&server_rio, buf, MAXLINE)) > 0)
     {
+        
 #ifdef DEBUG
         printf("Received %ld bytes from the remote server\n", len);
 #endif
+
         bufsize+=len;
         if(bufsize<MAX_OBJECT_SIZE) strcat(cachebuf,buf);
         //    printf("Received buf = %s\n",buf);
@@ -332,7 +332,7 @@ void writeAfter(int x)
     V(&cache.cacheset[x].workmutex);
 }
 
-char* cache_find(char *url,int *index)
+int cache_find(int fd,char *url)
 {
     int i;
     for(i=0;i<CACHE_SIZE;i++)
@@ -340,16 +340,14 @@ char* cache_find(char *url,int *index)
         readPre(i);
         if(cache.cacheset[i].isempty==0&&strcmp(cache.cacheset[i].cache_url,url)==0)   
         {
-            int size=strlen(cache.cacheset[i].cache_object);
-            char *s=(char*)Malloc(sizeof(char)*size);
-            memcpy(s,cache.cacheset[i].cache_object,size);
+            Rio_writen(fd,cache.cacheset[i].cache_object,MAX_OBJECT_SIZE);
             readAfter(i);
-            *index=i;
-            return s;
+            break;
         }
         readAfter(i);
     }
-    if(i==CACHE_SIZE)   return NULL;
+    if(i==CACHE_SIZE)   return -1;
+    return i;
 }
 
 int cache_remove()

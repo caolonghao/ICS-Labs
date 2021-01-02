@@ -1,376 +1,379 @@
-#include <stdio.h>
+/*
+ * Proxy with cache
+ * made by LiuSiyuan 1900013051
+ * 
+ * This is a proxy that receives request from client and build new ones 
+ * which are leter sent to the server, then starts to deliver messages between
+ * the client and the server. And it also has a cache so that the repeated
+ * data can be stored and there will be no need to visit server again.
+ * 
+ */
+
+
 #include "csapp.h"
+
 /* Recommended max cache and object sizes */
 #define MAX_CACHE_SIZE 1049000
 #define MAX_OBJECT_SIZE 102400
-#define LRU_MAGIC_NUMBER 9999
-#define CACHE_OBJS_COUNT 10
+#define CACHE_OBJS_SIZE 10      /* 10 cachelines */
+
 /* You won't lose style points for including this long line in your code */
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
-static const char *conn_hdr = "Connection: close\r\n";
-static const char *prox_hdr = "Proxy-Connection: close\r\n";
-static const char *host_hdr_format = "Host: %s\r\n";
-static const char *requestlint_hdr_format = "GET %s HTTP/1.0\r\n";
-static const char *endof_hdr = "\r\n";
+static const char *c_hdr = "Connection: close\r\n";
+static const char *p_hdr = "Proxy-Connection: close\r\n";
 
-static const char *connection_key = "Connection";
-static const char *user_agent_key= "User-Agent";
-static const char *proxy_connection_key = "Proxy-Connection";
-static const char *host_key = "Host";
-void *thread(void *vargp);
-
-void doit(int connfd);
-void parse_uri(char *uri,char *hostname,char *path,int *port);
-void build_http_header(char *http_header,char *hostname,char *path,int port,rio_t *client_rio);
-int connect_endServer(char *hostname,int port,char *http_header);
-
-/*cache function*/
-void cache_init();
-int cache_find(char *url);
-int cache_eviction();
-void cache_LRU(int index);
-void cache_uri(char *uri,char *buf);
-void readerPre(int i);
-void readerAfter(int i);
-
-typedef struct {
-    char cache_obj[MAX_OBJECT_SIZE];
-    char cache_url[MAXLINE];
-    int LRU;
-    int isEmpty;
-
-    int readCnt;            /*count of readers*/
-    sem_t wmutex;           /*protects accesses to cache*/
-    sem_t rdcntmutex;       /*protects accesses to readcnt*/
-
-    int writeCnt;
-    sem_t wtcntMutex;
-    sem_t queue;
-
-}cache_block;
-
-typedef struct {
-    cache_block cacheobjs[CACHE_OBJS_COUNT];  /*ten cache blocks*/
-    int cache_num;
-}Cache;
-
+typedef struct 
+{
+    int readcnt;                /* reader count */
+    int stamp;                  /* time stamp */
+    int valid;
+    sem_t mutex;                /* protects accesses to readcnt */
+    sem_t w;                    /* protects accesses to this cacheline */
+    char uri[MAXLINE];
+    char obj[MAX_OBJECT_SIZE];
+} CacheLine;
+typedef struct 
+{
+    CacheLine objs[CACHE_OBJS_SIZE];
+} Cache;
 Cache cache;
 
+/* function prototype for cache */
+void init_cache();
+int check_cache(int fd, char *url);
+void save_cache(char *url, char *buf);
+void readP(int i);
+void readV(int i);
+void writeP(int i);
+void writeV(int i);
 
-int main(int argc,char **argv)
+/* function prototype for proxy */
+void doit(int fd);
+void clienterror(int fd, char *cause, char *errnum,
+         char *shortmsg, char *longmsg);
+void parse_uri(char *uri, char *hostname, char *filename, int *port);
+void build_requesthdrs(rio_t *rp, char *newreq, char *hostname, char *port);
+void *thread(void *vargp);
+
+
+int main(int argc, char **argv)
 {
-    int listenfd,connfd;
-    socklen_t  clientlen;
-    char hostname[MAXLINE],port[MAXLINE];
+    signal(SIGPIPE, SIG_IGN);//ignore sigpipe
+    init_cache();
+
+    int listenfd, *connfd;
     pthread_t tid;
-    struct sockaddr_storage clientaddr;/*generic sockaddr struct which is 28 Bytes.The same use as sockaddr*/
+    char hostname[MAXLINE], port[MAXLINE];
+    socklen_t clientlen;
+    struct sockaddr_storage clientaddr;
 
-    cache_init();
-
-    if(argc != 2){
-        fprintf(stderr,"usage :%s <port> \n",argv[0]);
+    if (argc != 2)
+    {
+        fprintf(stderr, "usage: %s <port>\n", argv[0]);
         exit(1);
     }
-    Signal(SIGPIPE,SIG_IGN);
+
     listenfd = Open_listenfd(argv[1]);
-    while(1){
+    while (1)
+    {
         clientlen = sizeof(clientaddr);
-        connfd = Accept(listenfd,(SA *)&clientaddr,&clientlen);
-
-        /*print accepted message*/
-        Getnameinfo((SA*)&clientaddr,clientlen,hostname,MAXLINE,port,MAXLINE,0);
-        printf("Accepted connection from (%s %s).\n",hostname,port);
-
-        /*concurrent request*/
-        Pthread_create(&tid,NULL,thread,(void *)connfd);
+        connfd = Malloc(sizeof(int));
+        *connfd = Accept(listenfd, (SA *)&clientaddr, &clientlen);
+        Getnameinfo((SA *) &clientaddr, clientlen, hostname, MAXLINE,
+                port, MAXLINE, 0);
+        printf("Accepted connection from (%s, %s)\n", hostname, port);
+        Pthread_create(&tid, NULL, thread, connfd);
     }
-    return 0;
+    Close(listenfd);
 }
 
-/*thread function*/
-void *thread(void *vargp){
-    int connfd = (int)vargp;
-    Pthread_detach(pthread_self());
-
+/*
+ * Thread routine
+ */
+void *thread(void *vargp)
+{
+    int connfd = *((int *)vargp);
+    Pthread_detach(Pthread_self());
+    Free(vargp);
     doit(connfd);
-
     Close(connfd);
+    return NULL;
 }
 
-/*handle the client HTTP transaction*/
-void doit(int connfd)
+/*
+ * do what a proxy does
+ */
+void doit(int fd)
 {
-    int end_serverfd;/*the end server file descriptor*/
+    int serverfd;
+    char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
+    rio_t rioclient, rioserver;
+    char hostname[MAXLINE], filename[MAXLINE], port[MAXLINE];
+    char request[MAXLINE], uricpy[MAXLINE];
+    int portt;
 
-    char buf[MAXLINE],method[MAXLINE],uri[MAXLINE],version[MAXLINE];
-    char endserver_http_header [MAXLINE];
+    Rio_readinitb(&rioclient, fd);
+    if (!Rio_readlineb(&rioclient, buf, MAXLINE))//read client's request line
+        return;
 
-    /*store the request line arguments*/
-    char hostname[MAXLINE],path[MAXLINE];
-    int port;
+    sscanf(buf, "%s %s %s", method, uri, version);
+    if (strcasecmp(method, "GET"))//GET only
+    {
+        clienterror(fd, method, "501", "Not Implemented",
+                "Proxy Server does not implement this method");
+        return;
+    }
+    strcpy(uricpy, uri);
 
-    rio_t rio,server_rio;/*rio is client's rio,server_rio is endserver's rio*/
+    if (check_cache(fd, uri))//check out if stored in cache
+        return;
 
-    Rio_readinitb(&rio,connfd);
-    Rio_readlineb(&rio,buf,MAXLINE);
-    sscanf(buf,"%s %s %s",method,uri,version); /*read the client request line*/
+    //form the http request for the server 
+    parse_uri(uri, hostname, filename, &portt);
+    sprintf(port, "%d", portt);
+    sprintf(request, "GET %s HTTP/1.0\r\n", filename);
+    build_requesthdrs(&rioclient, request, hostname, port); 
 
-    char url_store[100];
-    strcpy(url_store,uri);  /*store the original url */
-    if(strcasecmp(method,"GET")){
-        //printf("Proxy does not implement the method\n");
+    serverfd = Open_clientfd(hostname, port);
+    if(serverfd < 0)
+    {
+        printf("Connection failed!\n");
         return;
     }
 
-    /*the uri is cached ? */
-    int cache_index;
-    if((cache_index=cache_find(url_store))!=-1){/*in cache then return the cache content*/
-         readerPre(cache_index);
-         Rio_writen(connfd,cache.cacheobjs[cache_index].cache_obj,strlen(cache.cacheobjs[cache_index].cache_obj));
-         readerAfter(cache_index);
-         cache_LRU(cache_index);
-         return;
-    }
-
-    /*parse the uri to get hostname,file path ,port*/
-    parse_uri(uri,hostname,path,&port);
-
-    /*build the http header which will send to the end server*/
-    build_http_header(endserver_http_header,hostname,path,port,&rio);
-
-    /*connect to the end server*/
-    end_serverfd = connect_endServer(hostname,port,endserver_http_header);
-    if(end_serverfd<0){
-        printf("connection failed\n");
-        return;
-    }
-
-    Rio_readinitb(&server_rio,end_serverfd);
-
-    /*write the http header to endserver*/
-    Rio_writen(end_serverfd,endserver_http_header,strlen(endserver_http_header));
-
-    /*receive message from end server and send to the client*/
-    char cachebuf[MAX_OBJECT_SIZE];
-    int sizebuf = 0;
-    size_t n;
-    while((n=Rio_readlineb(&server_rio,buf,MAXLINE))!=0)
+    Rio_readinitb(&rioserver, serverfd);
+    Rio_writen(serverfd, request, strlen(request));
+   
+    size_t n, size = 0;
+    char obj[MAX_OBJECT_SIZE];
+    memset(obj, 0, sizeof(obj));
+    while ((n = Rio_readlineb(&rioserver, buf, MAXLINE)))
     {
-        sizebuf+=n;
-        if(sizebuf < MAX_OBJECT_SIZE)  strcat(cachebuf,buf);
-        Rio_writen(connfd,buf,n);
-    }
-
-    Close(end_serverfd);
-
-    /*store it*/
-    if(sizebuf < MAX_OBJECT_SIZE){
-        cache_uri(url_store,cachebuf);
-    }
-}
-
-void build_http_header(char *http_header,char *hostname,char *path,int port,rio_t *client_rio)
-{
-    char buf[MAXLINE],request_hdr[MAXLINE],other_hdr[MAXLINE],host_hdr[MAXLINE];
-    /*request line*/
-    sprintf(request_hdr,requestlint_hdr_format,path);
-    /*get other request header for client rio and change it */
-    while(Rio_readlineb(client_rio,buf,MAXLINE)>0)
-    {
-        if(strcmp(buf,endof_hdr)==0) break;/*EOF*/
-
-        if(!strncasecmp(buf,host_key,strlen(host_key)))/*Host:*/
+        size += n;
+        if (size < MAX_OBJECT_SIZE)//check out if size exceeds objmax
         {
-            strcpy(host_hdr,buf);
-            continue;
+            memcpy(obj + size - n, buf, n);
         }
-
-        if(!strncasecmp(buf,connection_key,strlen(connection_key))
-                &&!strncasecmp(buf,proxy_connection_key,strlen(proxy_connection_key))
-                &&!strncasecmp(buf,user_agent_key,strlen(user_agent_key)))
-        {
-            strcat(other_hdr,buf);
-        }
+        //printf("Proxy received %ld bytes\n", n);
+        Rio_writen(fd, buf, n);
     }
-    if(strlen(host_hdr)==0)
-    {
-        sprintf(host_hdr,host_hdr_format,hostname);
-    }
-    sprintf(http_header,"%s%s%s%s%s%s%s",
-            request_hdr,
-            host_hdr,
-            conn_hdr,
-            prox_hdr,
-            user_agent_hdr,
-            other_hdr,
-            endof_hdr);
-
-    return ;
-}
-/*Connect to the end server*/
-inline int connect_endServer(char *hostname,int port,char *http_header){
-    char portStr[100];
-    sprintf(portStr,"%d",port);
-    return Open_clientfd(hostname,portStr);
+    
+    if (size < MAX_OBJECT_SIZE)//if doesn't store in cache
+        save_cache(uricpy, obj);
+    Close(serverfd);
 }
 
-/*parse the uri to get hostname,file path ,port*/
-void parse_uri(char *uri,char *hostname,char *path,int *port)
+/*
+ * break down the uri into hostname filename and port
+ */ 
+void parse_uri(char *uri, char *hostname, char *filename, int *port)
 {
-    *port = 80;
-    char* pos = strstr(uri,"//");
+    *port = 80;//default port 80
+    char *ptr1 = strstr(uri, "//");
+    if(ptr1)
+        ptr1 += 2;
+    else
+        ptr1 = uri;
 
-    pos = pos!=NULL? pos+2:uri;
-
-    char*pos2 = strstr(pos,":");
-    if(pos2!=NULL)
+    char *ptr2 = strstr(ptr1, ":");
+    if(ptr2 != NULL)
     {
-        *pos2 = '\0';
-        sscanf(pos,"%s",hostname);
-        sscanf(pos2+1,"%d%s",port,path);
+        *ptr2 = '\0';
+        sscanf(ptr1, "%s", hostname);
+        sscanf(ptr2 + 1, "%d%s", port, filename);
     }
     else
     {
-        pos2 = strstr(pos,"/");
-        if(pos2!=NULL)
-        {
-            *pos2 = '\0';
-            sscanf(pos,"%s",hostname);
-            *pos2 = '/';
-            sscanf(pos2,"%s",path);
-        }
+        ptr2 = strstr(ptr1, "/");
+        if(ptr2 == NULL)
+            sscanf(ptr1, "%s", hostname);
         else
         {
-            sscanf(pos,"%s",hostname);
+            *ptr2 = '\0';
+            sscanf(ptr1, "%s", hostname);
+            *ptr2 = '/';
+            sscanf(ptr2, "%s", filename);
         }
     }
-    return;
-}
-/**************************************
- * Cache Function
- **************************************/
-
-void cache_init(){
-    cache.cache_num = 0;
-    int i;
-    for(i=0;i<CACHE_OBJS_COUNT;i++){
-        cache.cacheobjs[i].LRU = 0;
-        cache.cacheobjs[i].isEmpty = 1;
-        Sem_init(&cache.cacheobjs[i].wmutex,0,1);
-        Sem_init(&cache.cacheobjs[i].rdcntmutex,0,1);
-        cache.cacheobjs[i].readCnt = 0;
-
-        cache.cacheobjs[i].writeCnt = 0;
-        Sem_init(&cache.cacheobjs[i].wtcntMutex,0,1);
-        Sem_init(&cache.cacheobjs[i].queue,0,1);
-    }
 }
 
-void readerPre(int i){
-    P(&cache.cacheobjs[i].queue);
-    P(&cache.cacheobjs[i].rdcntmutex);
-    cache.cacheobjs[i].readCnt++;
-    if(cache.cacheobjs[i].readCnt==1) P(&cache.cacheobjs[i].wmutex);
-    V(&cache.cacheobjs[i].rdcntmutex);
-    V(&cache.cacheobjs[i].queue);
+/*
+ * returns an error to the client
+ */
+void clienterror(int fd, char *cause, char *errnum,
+         char *shortmsg, char *longmsg)
+{
+    char buf[MAXLINE], body[MAXBUF];
+
+    sprintf(body, "<html><title>Proxy Error</title>");
+    sprintf(body, "%s<body bgcolor=""ffffff"">\r\n", body);
+    sprintf(body, "%s%s: %s\r\n", body, errnum, shortmsg);
+    sprintf(body, "%s<p>%s: %s\r\n", body, longmsg, cause);
+    sprintf(body, "%s<hr><em>The Proxy Web server</em>\r\n", body);
+
+   
+    sprintf(buf, "HTTP/1.0 %s %s\r\n", errnum, shortmsg);
+    Rio_writen(fd, buf, strlen(buf));
+    sprintf(buf, "Content-type: text/html\r\n");
+    Rio_writen(fd, buf, strlen(buf));
+    sprintf(buf, "Content-length: %d\r\n\r\n", (int)strlen(body));
+    Rio_writen(fd, buf, strlen(buf));
+    Rio_writen(fd, body, strlen(body));
 }
 
-void readerAfter(int i){
-    P(&cache.cacheobjs[i].rdcntmutex);
-    cache.cacheobjs[i].readCnt--;
-    if(cache.cacheobjs[i].readCnt==0) V(&cache.cacheobjs[i].wmutex);
-    V(&cache.cacheobjs[i].rdcntmutex);
-
-}
-
-void writePre(int i){
-    P(&cache.cacheobjs[i].wtcntMutex);
-    cache.cacheobjs[i].writeCnt++;
-    if(cache.cacheobjs[i].writeCnt==1) P(&cache.cacheobjs[i].queue);
-    V(&cache.cacheobjs[i].wtcntMutex);
-    P(&cache.cacheobjs[i].wmutex);
-}
-
-void writeAfter(int i){
-    V(&cache.cacheobjs[i].wmutex);
-    P(&cache.cacheobjs[i].wtcntMutex);
-    cache.cacheobjs[i].writeCnt--;
-    if(cache.cacheobjs[i].writeCnt==0) V(&cache.cacheobjs[i].queue);
-    V(&cache.cacheobjs[i].wtcntMutex);
-}
-
-/*find url is in the cache or not */
-int cache_find(char *url){
-    int i;
-    for(i=0;i<CACHE_OBJS_COUNT;i++){
-        readerPre(i);
-        if((cache.cacheobjs[i].isEmpty==0) && (strcmp(url,cache.cacheobjs[i].cache_url)==0)) break;
-        readerAfter(i);
-    }
-    if(i>=CACHE_OBJS_COUNT) return -1; /*can not find url in the cache*/
-    return i;
-}
-
-/*find the empty cacheObj or which cacheObj should be evictioned*/
-int cache_eviction(){
-    int min = LRU_MAGIC_NUMBER;
-    int minindex = 0;
-    int i;
-    for(i=0; i<CACHE_OBJS_COUNT; i++)
+/*
+ * build the new request headers for the server
+ */
+void build_requesthdrs(rio_t *rio, char *request, char *hostname, char* port)
+{
+    char buf[MAXLINE];
+    sprintf(request, "%sHost: %s:%s\r\n", request, hostname, port);
+    sprintf(request, "%s%s%s%s", request, user_agent_hdr, c_hdr, p_hdr);
+    while(Rio_readlineb(rio, buf, MAXLINE) > 0)
     {
-        readerPre(i);
-        if(cache.cacheobjs[i].isEmpty == 1){/*choose if cache block empty */
-            minindex = i;
-            readerAfter(i);
+        if (!strcmp(buf, "\r\n"))
+            break;
+        //ignore the clients's repeated headers
+        if (strstr(buf,"Host:") != NULL) 
+            continue;
+        if (strstr(buf,"User-Agent:") != NULL)
+            continue;
+        if (strstr(buf,"Connection:") != NULL) 
+            continue;
+        if (strstr(buf,"Proxy-Connection:") != NULL)
+            continue;
+        sprintf(request,"%s%s", request, buf);
+    }
+    sprintf(request, "%s\r\n", request);
+}
+
+/*
+ * initiate the cache
+ */
+void init_cache()
+{
+    for(int i = 0; i < CACHE_OBJS_SIZE; i++)
+    {
+        cache.objs[i].readcnt = 0;
+        cache.objs[i].stamp = -1;
+        cache.objs[i].valid = 0;
+        sem_init(&(cache.objs[i].mutex), 0, 1);
+        sem_init(&(cache.objs[i].w), 0, 1);
+        memset(cache.objs[i].uri, 0, sizeof(cache.objs[i].uri));
+        memset(cache.objs[i].obj, 0, sizeof(cache.objs[i].obj));
+    }
+}
+
+/*
+ * go through checklines to see if the data from the uri is stored 
+ * and renew time stamp
+ * if yes deliver it to the client and return a positive number
+ * if not return 0
+ */
+int check_cache(int fd, char *uri)
+{
+    int pos = -1;
+    for(int i = 0; i < CACHE_OBJS_SIZE; i++)
+    {
+        readP(i);
+        if((cache.objs[i].valid && !strcmp(cache.objs[i].uri, uri)))
+        {
+            pos = i;
+            rio_writen(fd, cache.objs[i].obj, MAX_OBJECT_SIZE);
+            readV(i);
             break;
         }
-        if(cache.cacheobjs[i].LRU< min){    /*if not empty choose the min LRU*/
-            minindex = i;
-            readerAfter(i);
-            continue;
-        }
-        readerAfter(i);
+        readV(i);
     }
-
-    return minindex;
+    //renew time stamp
+    for(int i = 0; i < CACHE_OBJS_SIZE; i++)
+    {
+        writeP(i);
+        if (pos == i)
+            cache.objs[i].stamp = -1;
+        if(cache.objs[i].valid)
+            cache.objs[i].stamp++;
+        writeV(i);
+    }
+    return pos + 1;
 }
-/*update the LRU number except the new cache one*/
-void cache_LRU(int index){
 
-    writePre(index);
-    cache.cacheobjs[index].LRU = LRU_MAGIC_NUMBER;
-    writeAfter(index);
-
-    int i;
-    for(i=0; i<index; i++)    {
-        writePre(i);
-        if(cache.cacheobjs[i].isEmpty==0 && i!=index){
-            cache.cacheobjs[i].LRU--;
+/*
+ * find an empty or the lru cacheline to store the data 
+ * and renew time stamp 
+ */ 
+void save_cache(char *uri, char *obj)
+{
+    int Max = -1, pos = 0;
+    for(int i = 0; i < CACHE_OBJS_SIZE; i++)
+    {
+        readP(i);
+        if(!cache.objs[i].valid)//found an empty one
+        {
+            pos = i;
+            readV(i);
+            break;
         }
-        writeAfter(i);
+        if(cache.objs[i].stamp > Max)//trying to find the lru one
+        {
+            pos = i;
+            Max = cache.objs[i].stamp;
+        }
+        readV(i);
     }
-    i++;
-    for(i; i<CACHE_OBJS_COUNT; i++)    {
-        writePre(i);
-        if(cache.cacheobjs[i].isEmpty==0 && i!=index){
-            cache.cacheobjs[i].LRU--;
-        }
-        writeAfter(i);
+
+    writeP(pos);
+    strcpy(cache.objs[pos].uri, uri);
+    memcpy(cache.objs[pos].obj, obj, MAX_OBJECT_SIZE);
+    cache.objs[pos].valid = 1;
+    cache.objs[pos].stamp = -1;
+    writeV(pos);
+    //renew time stamp
+    for(int i = 0; i < CACHE_OBJS_SIZE; i++)
+    {
+        writeP(i);
+        if(cache.objs[i].valid)
+            cache.objs[i].stamp++;
+        writeV(i);
     }
 }
-/*cache the uri and content in cache*/
-void cache_uri(char *uri,char *buf){
 
+/*
+ * package function before read
+ */ 
+void readP(int i)
+{
+    P(&(cache.objs[i].mutex));
+    cache.objs[i].readcnt++;
+    if(cache.objs[i].readcnt == 1) 
+        P(&(cache.objs[i].w));
+    V(&(cache.objs[i].mutex));
+}
 
-    int i = cache_eviction();
+/*
+ * package function after read
+ */ 
+void readV(int i)
+{
+    P(&(cache.objs[i].mutex));
+    cache.objs[i].readcnt--;
+    if(cache.objs[i].readcnt == 0) 
+        V(&(cache.objs[i].w));
+    V(&(cache.objs[i].mutex));
+}
 
-    writePre(i);/*writer P*/
+/*
+ * package function before write
+ */ 
+void writeP(int i)
+{
+    P(&(cache.objs[i].w));
+}
 
-    strcpy(cache.cacheobjs[i].cache_obj,buf);
-    strcpy(cache.cacheobjs[i].cache_url,uri);
-    cache.cacheobjs[i].isEmpty = 0;
-
-    writeAfter(i);/*writer V*/
-
-    cache_LRU(i);
+/*
+ * package function after write
+ */ 
+void writeV(int i)
+{
+    V(&(cache.objs[i].w));
 }
