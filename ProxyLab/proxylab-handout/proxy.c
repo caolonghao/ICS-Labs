@@ -6,7 +6,7 @@
 #define CACHE_SIZE 10
 #define INF 0x3f3f3f3f
 
-#define DEBUG
+//#define DEBUG
 /* You won't lose style points for including this long line in your code */
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
 static const char *connect_header = "Connection: close\r\n";
@@ -26,7 +26,7 @@ int connect_server(char *hostname, int port, char *header);
 
 /* Cache Part*/
 void cache_init();
-char* cache_find(char *url,int* index);
+int cache_find(char *url);
 int cache_remove();
 void cache_LRU();
 void cache_uri(char *uri, char *buf);
@@ -129,17 +129,16 @@ void doit(int fd)
     } //line:netp:doit:endrequesterr
 
     
-    int cache_index;
-    char* cache_context=cache_find(uri,&cache_index);
-    if(cache_context!=NULL)
+
+    int cache_index=cache_find(uri);
+    if(cache_index!=-1)
     {
-        readPre(cache_index);
+    //    readPre(cache_index);
         puts("cache hit!");
-        Rio_writen(fd,cache_context,strlen(cache_context));
+        Rio_writen(fd,cache.cacheset[cache_index].cache_object,strlen(cache.cacheset[cache_index].cache_object));
         cache.cacheset[cache_index].LRU=0;
         readAfter(cache_index);
         cache_LRU();
-        Free(cache_context);
         return;
     }
 
@@ -168,7 +167,7 @@ void doit(int fd)
     size_t len;
     while ((len = Rio_readlineb(&server_rio, buf, MAXLINE)) > 0)
     {
-#ifdef DEBUG
+#ifdef DEBUG    
         printf("Received %ld bytes from the remote server\n", len);
 #endif
         bufsize+=len;
@@ -332,24 +331,18 @@ void writeAfter(int x)
     V(&cache.cacheset[x].workmutex);
 }
 
-char* cache_find(char *url,int *index)
+int cache_find(char *url)
 {
     int i;
     for(i=0;i<CACHE_SIZE;i++)
     {
         readPre(i);
         if(cache.cacheset[i].isempty==0&&strcmp(cache.cacheset[i].cache_url,url)==0)   
-        {
-            int size=strlen(cache.cacheset[i].cache_object);
-            char *s=(char*)Malloc(sizeof(char)*size);
-            memcpy(s,cache.cacheset[i].cache_object,size);
-            readAfter(i);
-            *index=i;
-            return s;
-        }
+            break;//直接break,在找完后再去readAfter,保证不在中间被替换出错
         readAfter(i);
     }
-    if(i==CACHE_SIZE)   return NULL;
+    if(i==CACHE_SIZE)   return -1;
+    return i;
 }
 
 int cache_remove()
