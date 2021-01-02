@@ -1,0 +1,40 @@
+int modThree(int x) {
+    int judge;
+    int tmp;
+    int test=x>>31;
+    int a=(1<<16)+~0;
+    int ans;
+    int bias;
+    //change x into abs_x
+    x=(test&(~x+1))+(~test&(x));
+    tmp=x&a;
+    tmp=( (x>>16)&a )+tmp;
+    tmp+=(tmp>>16);
+    x=tmp&a;
+  //  cout<<"x="<<x<<endl;
+    a>>=8;
+    tmp=x&a;
+    tmp=( (x>>8)&a )+tmp;
+    tmp+=(tmp>>8);
+    x=tmp&a;
+ //   cout<<"x="<<x<<endl;
+    a>>=4;
+    tmp=x&a;
+    tmp=( (x>>4)&a )+tmp;
+    tmp+=(tmp>>4);
+    x=tmp&a;
+//    cout<<"x="<<x<<endl;
+    a>>=2;
+    tmp=x&a;
+    tmp=( (x>>2)&a )+tmp;
+    tmp+=(tmp>>2);
+    x=tmp&a;
+    judge=x^3;
+//    cout<<"x="<<x<<endl;
+    judge=!!judge;
+    judge=judge<<31>>31;
+    ans=x&judge;
+    bias=~ans+1;
+    ans=ans+(test&(bias<<1));
+    return ans;
+}

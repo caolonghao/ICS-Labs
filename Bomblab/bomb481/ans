@@ -1,0 +1,23 @@
+Border relations with Canada have never been better.
+
+1 2 4 8 16 32
+
+读取两个数a b,a在[0,7]范围内，b要与a用switch语句后的返回值对应
+4 305
+
+读取两个数a,b==7,让f(a,0,14)==7,a<=14,a>=0尝试即可，啊这，我翻译成c代码我都不知道fun是干啥的
+7 7
+f(a,b,c)
+{
+    int v=b+(c-b)/2;
+    if(v>a) v+=f(a,b,v-1);
+    if(v<a) v+=f(a,v+1,c);
+    return v;
+}
+
+rdi是指向输入字符串开头的一个指针
+数组内容为a[0-7]: 2 6 1 3 4 7 5 8
+7553
+
+输入6个不相等的数，每个数都<=6且>=1
+3 4 2 1 5 6

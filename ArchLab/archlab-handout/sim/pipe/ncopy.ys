@@ -1,0 +1,116 @@
+#/* $begin ncopy-ys */
+##################################################################
+# ncopy.ys - Copy a src block of len words to dst.
+# Return the number of positive words (>0) contained in src.
+#
+# Include your name and ID here.
+# 1900013044 TonyC
+#
+# Describe how and why you modified the baseline code.
+# 1. replace add with iadd
+# 2. extract the loops to 6 operations one loop
+# 3. make less bubble by separate the read and write memory operation 
+#
+##################################################################
+# Do not modify this portion
+# Function prologue.
+# %rdi = src , %rsi = dst, %rdx = len
+ncopy:
+
+##################################################################
+# You can modify this portion
+	# Loop header
+	iaddq $-6,%rdx		# length -= 6
+	jl REM
+
+Loop:
+    mrmovq (%rdi), %r10	# read val from src...
+	mrmovq 8(%rdi),%r11
+	rmmovq %r10, (%rsi)	# ...and store it to dst
+	andq %r10, %r10		# val <= 0?
+	jle Copy		# if so, goto Copy:
+	iaddq $1,%rax
+Copy:
+	rmmovq %r11,8(%rsi)
+	mrmovq 16(%rdi),%r10
+	andq %r11,%r11
+	jle Copy2
+	iaddq $1,%rax
+Copy2:
+	mrmovq 24(%rdi),%r11
+	rmmovq %r10, 16(%rsi)
+	andq %r10,%r10
+	jle Copy3
+	iaddq $1,%rax
+Copy3:
+	rmmovq %r11,24(%rsi)
+	mrmovq 32(%rdi),%r10
+	andq %r11,%r11
+	jle Copy4
+	iaddq $1,%rax
+Copy4:
+	mrmovq 40(%rdi),%r11
+	rmmovq %r10, 32(%rsi)
+	andq %r10,%r10
+	jle Copy5
+	iaddq $1,%rax
+Copy5:
+	rmmovq %r11,40(%rsi)
+	andq %r11,%r11
+	jle nLoop
+	iaddq $1,%rax
+nLoop:
+	iaddq $48,%rdi
+	iaddq $48,%rsi
+	iaddq $-6,%rdx
+	jge Loop
+
+REM:
+	iaddq $5,%rdx
+	jl Done
+    mrmovq (%rdi), %r10
+	mrmovq 8(%rdi),%r11
+	rmmovq %r10, (%rsi)
+	andq %r10,%r10
+	jle RENPO
+	iaddq $1,%rax
+RENPO:
+	iaddq $-1,%rdx
+	jl Done
+	rmmovq %r11,8(%rsi)
+	andq %r11,%r11
+	jle RENPO1
+	iaddq $1,%rax
+RENPO1:
+	iaddq $-1,%rdx
+	jl Done
+    mrmovq 16(%rdi), %r10
+	mrmovq 24(%rdi), %r11
+	rmmovq %r10, 16(%rsi)
+	andq %r10,%r10
+	jle RENPO2
+	iaddq $1,%rax
+RENPO2:
+	iaddq $-1,%rdx
+	jl Done
+	rmmovq %r11,24(%rsi)
+	andq %r11,%r11
+	jle Next
+	iaddq $1,%rax
+	Next:
+		iaddq $-1,%rdx
+		jl Done
+		mrmovq 32(%rdi), %r10
+		rmmovq %r10,32(%rsi)
+		andq %r10,%r10
+		jle Done
+		iaddq $1,%rax
+##################################################################
+# Do not modify the following section of code
+# Function epilogue.
+Done:
+	ret
+##################################################################
+# Keep the following label at the end of your function
+End:
+#/* $end ncopy-ys */

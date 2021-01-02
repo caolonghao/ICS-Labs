@@ -1,0 +1,70 @@
+                            | # bubble.ys by TonyC
+                            | # Execution begins at address 0
+                            | 
+0x000:                      | 	.pos 0
+0x000: 30f40002000000000000 | 	irmovq stack, %rsp
+0x00a: 804800000000000000   | 	call main
+0x013: 00                   | 	halt
+                            | 
+0x018:                      |     .align 8
+0x018:                      |     Array:
+0x018: ca0b000000000000     |         .quad 0xbca
+0x020: ba0c000000000000     |         .quad 0xcba
+0x028: cb0a000000000000     |         .quad 0xacb
+0x030: ab0c000000000000     |         .quad 0xcab
+0x038: bc0a000000000000     |         .quad 0xabc
+0x040: ac0b000000000000     |         .quad 0xbac
+                            | 
+0x048:                      |     main:	
+0x048: 30f71800000000000000 |         irmovq Array,%rdi
+0x052: 30f60600000000000000 |         irmovq 6,%rsi
+0x05c: 806600000000000000   |         call bubble_sort
+0x065: 90                   | 	    ret
+                            |     
+0x066:                      |     bubble_sort:
+0x066: 30fa0000000000000000 |         irmovq $0,%r10
+0x070: 30fd0800000000000000 |         irmovq $8,%r13
+0x07a: 30fe0100000000000000 |         irmovq $1,%r14
+                            | 
+0x084: 2078                 |         rrmovq %rdi,%r8 #r8 --> ed
+0x086: 30f00100000000000000 |         irmovq $1,%rax
+0x090:                      |     L10:
+0x090: 2002                 |         rrmovq	%rax, %rdx
+0x092: 202b                 |         rrmovq  %rdx, %r11
+0x094: 616b                 |         subq %rsi,%r11  #%r11=%rdx-%rsi
+0x096: 75ac00000000000000   |         jge	L15
+0x09f: 60d8                 |         addq	%r13, %r8
+0x0a1: 60e0                 |         addq	%r14, %rax
+0x0a3: 709000000000000000   |         jmp	L10
+0x0ac:                      |     L15:
+0x0ac: 30f90000000000000000 |         irmovq	$0, %r9
+0x0b6: 700e01000000000000   |         jmp	L9
+0x0bf:                      |     L13:
+0x0bf: 60d0                 |         addq	%r13, %rax
+0x0c1:                      |     L14:
+0x0c1: 208b                 |         rrmovq %r8,%r11
+0x0c3: 610b                 |         subq %rax,%r11 #r11= r8 - rax
+0x0c5: 730c01000000000000   |         je L12
+0x0ce: 50200800000000000000 |         mrmovq	8(%rax), %rdx
+0x0d8: 50100000000000000000 |         mrmovq	(%rax), %rcx
+0x0e2: 202b                 |         rrmovq %rdx,%r11
+0x0e4: 611b                 |         subq %rcx,%r11 # r11 = rdx - rcx
+0x0e6: 75bf00000000000000   |         jge	L13
+0x0ef: 40100800000000000000 |         rmmovq	%rcx, 8(%rax)
+0x0f9: 40200000000000000000 |         rmmovq	%rdx, (%rax)
+0x103: 70bf00000000000000   |         jmp	L13
+0x10c:                      |     L12:
+0x10c: 60e9                 |         addq	%r14, %r9
+0x10e:                      |     L9:
+0x10e: 2090                 |         rrmovq	%r9, %rax
+0x110: 200b                 |         rrmovq %rax, %r11
+0x112: 616b                 |         subq %rsi, %r11 # r11 = rax - rsi
+0x114: 752801000000000000   |         jge	L8
+0x11d: 2070                 |         rrmovq	%rdi, %rax # rax = data
+0x11f: 70c100000000000000   |         jmp	L14
+0x128:                      |     L8:
+0x128: 90                   |         ret
+                            | 
+                            | 
+0x200:                      |     .pos 0x200
+0x200:                      | stack:

@@ -1,0 +1,70 @@
+# bubble.ys by TonyC
+# Execution begins at address 0
+
+	.pos 0
+	irmovq stack, %rsp
+	call main
+	halt
+
+    .align 8
+    Array:
+        .quad 0xbca
+        .quad 0xcba
+        .quad 0xacb
+        .quad 0xcab
+        .quad 0xabc
+        .quad 0xbac
+
+    main:	
+        irmovq Array,%rdi
+        irmovq 6,%rsi
+        call bubble_sort
+	    ret
+    
+    bubble_sort:
+        irmovq $0,%r10
+        irmovq $8,%r13
+        irmovq $1,%r14
+
+        rrmovq %rdi,%r8 #r8 --> ed
+        irmovq $1,%rax
+    L10:
+        rrmovq	%rax, %rdx
+        rrmovq  %rdx, %r11
+        subq %rsi,%r11  #%r11=%rdx-%rsi
+        jge	L15
+        addq	%r13, %r8
+        addq	%r14, %rax
+        jmp	L10
+    L15:
+        irmovq	$0, %r9
+        jmp	L9
+    L13:
+        addq	%r13, %rax
+    L14:
+        rrmovq %r8,%r11
+        subq %rax,%r11 #r11= r8 - rax
+        je L12
+        mrmovq	8(%rax), %rdx
+        mrmovq	(%rax), %rcx
+        rrmovq %rdx,%r11
+        subq %rcx,%r11 # r11 = rdx - rcx
+        jge	L13
+        rmmovq	%rcx, 8(%rax)
+        rmmovq	%rdx, (%rax)
+        jmp	L13
+    L12:
+        addq	%r14, %r9
+    L9:
+        rrmovq	%r9, %rax
+        rrmovq %rax, %r11
+        subq %rsi, %r11 # r11 = rax - rsi
+        jge	L8
+        rrmovq	%rdi, %rax # rax = data
+        jmp	L14
+    L8:
+        ret
+
+
+    .pos 0x200
+stack:
