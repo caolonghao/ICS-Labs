@@ -26,33 +26,33 @@
 void unix_error(char *msg) /* Unix-style error */
 {
     fprintf(stderr, "%s: %s\n", msg, strerror(errno));
-    exit(0);
+//    exit(0);
 }
 /* $end unixerror */
 
 void posix_error(int code, char *msg) /* Posix-style error */
 {
     fprintf(stderr, "%s: %s\n", msg, strerror(code));
-    exit(0);
+//    exit(0);
 }
 
 void gai_error(int code, char *msg) /* Getaddrinfo-style error */
 {
     fprintf(stderr, "%s: %s\n", msg, gai_strerror(code));
-    exit(0);
+//    exit(0);
 }
 
 void app_error(char *msg) /* Application error */
 {
     fprintf(stderr, "%s\n", msg);
-    exit(0);
+//    exit(0);
 }
 /* $end errorfuns */
 
 void dns_error(char *msg) /* Obsolete gethostbyname error */
 {
     fprintf(stderr, "%s\n", msg);
-    exit(0);
+//    exit(0);
 }
 
 
@@ -270,7 +270,7 @@ ssize_t sio_putl(long v) /* Put long */
 void sio_error(char s[]) /* Put error message and exit */
 {
     sio_puts(s);
-    _exit(1);                                      //line:csapp:sioexit
+//    _exit(1);                                      //line:csapp:sioexit
 }
 /* $end siopublic */
 

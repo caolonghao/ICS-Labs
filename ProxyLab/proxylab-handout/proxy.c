@@ -6,7 +6,7 @@
 #define CACHE_SIZE 10
 #define INF 0x3f3f3f3f
 
-#define DEBUG
+//#define DEBUG
 /* You won't lose style points for including this long line in your code */
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
 static const char *connect_header = "Connection: close\r\n";
@@ -142,7 +142,7 @@ void doit(int fd)
     strcpy(origin_uri, uri);
 
     parse_uri(uri, hostname, path, &port);
-
+    puts("parse finished!");
 #ifdef DEBUG
     printf("%s %s %d\n", hostname, path, port);
 #endif
@@ -191,16 +191,20 @@ void doit(int fd)
 void build_header_send_to_server(char *header, char *hostname, char *path, int port, rio_t *client_rio)
 {
     char buf[MAXLINE], request_header[MAXLINE], host_header[MAXLINE], other_header[MAXLINE];
+//    printf("path -> %s\n",path);
     sprintf(request_header, "GET %s HTTP/1.0\r\n", path);
     sprintf(host_header, "Host: %s:%d\r\n", hostname, port);
     sprintf(other_header, "%s%s%s", user_agent_hdr, connect_header, proxy_header);
     strcat(request_header, host_header);
     strcat(request_header, other_header);
+//    sprintf(request_header,"%s%s%s",request_header,host_header,other_header);
+    printf("Start Success!\n\n\n");
     while (Rio_readlineb(client_rio, buf, MAXLINE) > 0)
     {
+    //    puts("+1s");
         if (strcmp(buf, "\r\n") == 0)
             break;
-
+        printf("buf -> %s\n",buf);
         /*ignore repeated header*/
         if (strstr(buf, "Host:") != NULL)
             continue;
@@ -210,13 +214,17 @@ void build_header_send_to_server(char *header, char *hostname, char *path, int p
             continue;
         if (strstr(buf, "Proxy-Connection:") != NULL)
             continue;
-        strcat(request_header, buf);
+    //    strcat(request_header, buf);
+        sprintf(request_header,"%s%s",request_header,buf);
+//        printf("buf finished!\n");
     }
+//    puts("Finished!");
     strcat(request_header, "\r\n");
+//    sprintf(request_header,"%s%s",request_header,"\r\n");
     sprintf(header, "%s", request_header);
-#ifdef DEBUG
+    
     printf("%s\n", header);
-#endif
+
     return;
 }
 
@@ -236,12 +244,12 @@ void read_requesthdrs(rio_t *rp, char *req_header_buf)
     char buf[MAXLINE];
     req_header_buf[0] = '\0';
 
-    rio_readlineb(rp, buf, MAXLINE);
+    Rio_readlineb(rp, buf, MAXLINE);
     printf("%s", buf);
     strcat(req_header_buf, buf);
     while (strcmp(buf, "\r\n"))
     { //line:netp:readhdrs:checkterm
-        rio_readlineb(rp, buf, MAXLINE);
+        Rio_readlineb(rp, buf, MAXLINE);
         printf("%s", buf);
         strcat(req_header_buf, buf);
     }
