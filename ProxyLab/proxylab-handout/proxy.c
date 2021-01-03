@@ -142,7 +142,7 @@ void doit(int fd)
     strcpy(origin_uri, uri);
 
     parse_uri(uri, hostname, path, &port);
-    puts("parse finished!");
+//    puts("parse finished!");
 #ifdef DEBUG
     printf("%s %s %d\n", hostname, path, port);
 #endif
@@ -188,6 +188,7 @@ void doit(int fd)
 }
 /* $end doit */
 
+/* build_header_send_to_server */
 void build_header_send_to_server(char *header, char *hostname, char *path, int port, rio_t *client_rio)
 {
     char buf[MAXLINE], request_header[MAXLINE], host_header[MAXLINE], other_header[MAXLINE];
@@ -205,6 +206,7 @@ void build_header_send_to_server(char *header, char *hostname, char *path, int p
         if (strcmp(buf, "\r\n") == 0)
             break;
         printf("buf -> %s\n",buf);
+
         /*ignore repeated header*/
         if (strstr(buf, "Host:") != NULL)
             continue;
@@ -214,6 +216,7 @@ void build_header_send_to_server(char *header, char *hostname, char *path, int p
             continue;
         if (strstr(buf, "Proxy-Connection:") != NULL)
             continue;
+            
     //    strcat(request_header, buf);
         sprintf(request_header,"%s%s",request_header,buf);
 //        printf("buf finished!\n");
@@ -223,11 +226,12 @@ void build_header_send_to_server(char *header, char *hostname, char *path, int p
 //    sprintf(request_header,"%s%s",request_header,"\r\n");
     sprintf(header, "%s", request_header);
     
-    printf("%s\n", header);
+//    printf("%s\n", header);
 
     return;
 }
 
+/* connect to the remote server by hostname and port */
 int connect_server(char *hostname, int port)
 {
     char port_name[10];
@@ -307,6 +311,7 @@ void cache_init()
     }
 }
 
+/* Critical area solve */
 void readPre(int x)
 {
     P(&cache.cacheset[x].rcntmutex);
@@ -335,6 +340,9 @@ void writeAfter(int x)
     V(&cache.cacheset[x].workmutex);
 }
 
+/*
+ * find the cache block by url, if found then update the context of the fd, return -1 if not found
+ */
 int cache_find(int fd, char *url)
 {
     int i;
@@ -354,6 +362,9 @@ int cache_find(int fd, char *url)
     return i;
 }
 
+/*
+ * find the cache block to remove
+ */
 int cache_remove()
 {
     int max_LRU = -1;
@@ -377,6 +388,9 @@ int cache_remove()
     return record;
 }
 
+/*
+ * update every cacheblock's LRU stamps
+ */
 void cache_LRU(int index)
 {
     for (int i = 0; i < CACHE_SIZE; i++)
@@ -394,6 +408,9 @@ void cache_LRU(int index)
     }
 }
 
+/*  
+ *  put the context in the cache blocks and update LRU
+ */
 void cache_uri(char *url, char *buf)
 {
     int num = cache_remove();
@@ -406,6 +423,9 @@ void cache_uri(char *url, char *buf)
     cache_LRU(num);
 }
 
+/*
+ * print cache_blocks
+ */
 void print_cahce()
 {
     for (int i = 0; i < CACHE_SIZE; i++)
